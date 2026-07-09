@@ -74,16 +74,28 @@ git commit -m "initial customization for $APP"
 git push
 ```
 
-### 7. Report the result to the user
+### 7. Now build the actual app
 
-State plainly:
+**Do not stop here. Do not ask "should I build it now?" — the answer is always yes.** Scaffolding a placeholder Next.js page and reporting the URL is not what the user asked for. They described an app; you build that app.
 
-- Prod URL: `https://$APP.{{CUSTOMER_DOMAIN}}/` — live within ~2 minutes (first HTTP01 cert issuance adds another 30-90s the first time someone hits it).
-- Every non-main branch push will auto-open a draft PR and create a preview at `https://<branch-slug>-$APP.{{CUSTOMER_DOMAIN}}/`.
-- Secrets go through `/set-secret` from inside the app repo.
-- The starter app is a placeholder Next.js page at `/` plus `/api/health` and `/api/env-demo`. Edit `app/page.tsx` to replace the home page and add more routes under `app/`.
+Continue in the same session:
 
-Include the repo URL: `https://github.com/{{CUSTOMER_ORG}}/$APP`.
+1. **Create a feature branch**: `git checkout -b feature/initial-implementation`.
+2. **Read the repo's `CLAUDE.md`** — it prescribes stack, patterns, and platform invariants for this codebase.
+3. **Implement the app the user described.** Editing `app/page.tsx`, adding routes under `app/`, adding a database with Prisma if needed, wiring auth — all of it. This is the actual work.
+4. **Push commits to the feature branch as you go.** Each push produces a preview URL at `https://feature-initial-implementation-$APP.{{CUSTOMER_DOMAIN}}/`. Use it to verify what you built actually works before assuming it does.
+5. **Iterate until the app does what the user asked.** Broken previews are cheap; broken prod is not.
+
+Only after the preview URL renders a working version of what the user described do you stop and hand off. At that point tell the user:
+- The prod URL: `https://$APP.{{CUSTOMER_DOMAIN}}/` (currently the scaffold placeholder).
+- The preview URL where they can verify what you built: `https://feature-initial-implementation-$APP.{{CUSTOMER_DOMAIN}}/`.
+- The GitHub PR to review + merge: `https://github.com/{{CUSTOMER_ORG}}/$APP/pull/<N>`.
+- One-sentence summary of what the app does now.
+- If Prisma / auth / secrets were set up, mention which env vars you set via `/set-secret`.
+
+The user merges the PR when they're satisfied. Merge to main → the platform promotes it to the prod URL within ~2 minutes.
+
+**If the user's request was literally "just scaffold a new app, I'll build it myself"** — stop after step 6 with a one-liner. Otherwise: keep building.
 
 ## Verifying it worked (optional)
 
