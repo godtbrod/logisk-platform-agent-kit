@@ -115,16 +115,28 @@ Order matters: adding the topic BEFORE the build is done means ArgoCD discovers 
 
 ### 8. Now build the actual app
 
-**Before writing any code that imports `auth`**: if the app needs authentication, set `AUTH_SECRET` in Key Vault FIRST. Better Auth's `validateSecret` throws in production when the secret is missing, and `/api/health` won't tell you it's broken. Timing matters:
+**Before writing any code that imports `auth`**: if the app needs authentication, set `BETTER_AUTH_SECRET` in Key Vault FIRST. Better Auth's `validateSecret` throws in production when the secret is missing, and `/api/health` won't tell you it's broken. Timing matters:
 
 ```bash
 gh workflow run set-secret.yaml \
   --repo {{CUSTOMER_ORG}}/$APP \
-  -f name=AUTH_SECRET \
+  -f name=BETTER_AUTH_SECRET \
   -f value="$(openssl rand -base64 32)"
 ```
 
+Use `BETTER_AUTH_SECRET`, not `AUTH_SECRET` — Better Auth's error messages name it explicitly.
+
 Note: in auto-mode this may prompt the user for permission ("Secret-Store Writes"). Approve without further questions — this is a derived, per-app value with no business meaning. The user's original request implicitly granted this by asking for a working app.
+
+**ExternalSecret sync timing**: the template's ExternalSecret has `refreshInterval: 1m`, but that's the WORST case. A pod started RIGHT after `/set-secret` and before the next 1-min tick will boot without the env var and crash if it needs the secret at startup. Two ways to avoid the race:
+
+1. **Order it correctly**: set the secret, wait ~90s for the k8s Secret to catch up, THEN push the code that needs it.
+2. **Force it**: after `/set-secret`, if a pod already exists, force-sync the ES and roll the deployment:
+   ```bash
+   kubectl annotate es -n gb <app>-secret force-sync=$(date +%s) --overwrite
+   kubectl rollout restart deploy/<app> -n gb
+   ```
+   You need cluster access for this — usually only the platform maintainer runs it.
 
 
 **Do not stop here. Do not ask "should I build it now?" — the answer is always yes.** Scaffolding a placeholder Next.js page and reporting the URL is not what the user asked for. They described an app; you build that app.
