@@ -40,13 +40,25 @@ gh repo create {{CUSTOMER_ORG}}/$APP \
 cd $APP
 ```
 
+If that errors with `Name already exists on this account (cloneTemplateRepository)`, verify whether the repo actually exists — `gh` sometimes retries the mutation internally and surfaces the second attempt's error even though the first succeeded:
+
+```bash
+gh api repos/{{CUSTOMER_ORG}}/$APP --jq '{name, template: .template_repository.full_name, createdAt: .created_at}'
+```
+
+If it exists with `template: {{CUSTOMER_ORG}}/{{TEMPLATE_REPO}}` and was created seconds ago, the `--clone` never ran. Clone separately:
+
+```bash
+gh repo clone {{CUSTOMER_ORG}}/$APP && cd $APP
+```
+
 ### 3. Substitute placeholders in the manifests
+
+Only `PLACEHOLDER_APP` remains customer-scoped placeholders (`CUSTOMERORG`, `CUSTOMER_DOMAIN`) are pre-substituted in the seeded template.
 
 ```bash
 find manifests .github -type f -name '*.yaml' -exec sed -i.bak \
-  -e "s|PLACEHOLDER_APP|$APP|g" \
-  -e "s|PLACEHOLDER_CUSTOMERORG|{{CUSTOMER_ORG}}|g" \
-  -e "s|PLACEHOLDER_CUSTOMER_DOMAIN|{{CUSTOMER_DOMAIN}}|g" {} \;
+  -e "s|PLACEHOLDER_APP|$APP|g" {} \;
 find manifests .github -name '*.bak' -delete
 ```
 
@@ -70,17 +82,26 @@ git push
 
 The initial manifest ships with `newTag: PLACEHOLDER_TAG`. If ArgoCD discovers the repo before the first `bump-prod` writes a real tag, the pod goes into `ImagePullBackOff` and looks broken. Waiting here prevents that.
 
+`gh run watch` requires an explicit run id — `gh run watch --repo X` alone errors with `run ID required when not running interactively`. Grab the id first, then watch:
+
 ```bash
-gh run watch --repo {{CUSTOMER_ORG}}/$APP --exit-status
+RUN_ID=$(gh run list --repo {{CUSTOMER_ORG}}/$APP --branch main --limit 1 --json databaseId --jq '.[0].databaseId')
+gh run watch $RUN_ID --repo {{CUSTOMER_ORG}}/$APP --exit-status
 ```
 
 `--exit-status` returns non-zero if the build fails. If it fails:
 
-- Read the failure with `gh run view --log-failed`.
+- Read the failure with `gh run view $RUN_ID --repo {{CUSTOMER_ORG}}/$APP --log-failed`.
 - Fix the cause and push again (rare — the template ships in a known-working state).
 - Only proceed to step 7 once the build has a green run.
 
-After the run succeeds, wait ~10s for `bump-prod` on the follow-up commit to write the real image tag to `manifests/prod/kustomization.yaml`. You can confirm with `git pull && grep newTag manifests/prod/kustomization.yaml` — it should show `newTag: main-<sha>`, not `PLACEHOLDER_TAG`.
+**Runs can queue >10 minutes** if GitHub-hosted runners are busy. That's queue latency, not a hang. If your tool has a default timeout that would fire before the run completes, poll in a longer-budget loop instead — e.g.:
+
+```bash
+until [ "$(gh run view $RUN_ID --repo {{CUSTOMER_ORG}}/$APP --json status --jq .status)" = "completed" ]; do sleep 30; done
+```
+
+After the run succeeds, wait ~10s for `bump-prod` on the follow-up commit to write the real image tag to `manifests/prod/kustomization.yaml`. Confirm: `git pull && grep newTag manifests/prod/kustomization.yaml` — should show `newTag: main-<sha>`, not `PLACEHOLDER_TAG`.
 
 ### 7. Tag the repo — this is what makes the platform pick it up
 
@@ -93,6 +114,18 @@ gh repo edit --add-topic logisk-platform
 Order matters: adding the topic BEFORE the build is done means ArgoCD discovers the repo while the manifest still says `PLACEHOLDER_TAG` and briefly shows a broken pod. Adding it AFTER means the first sync lands a healthy pod.
 
 ### 8. Now build the actual app
+
+**Before writing any code that imports `auth`**: if the app needs authentication, set `AUTH_SECRET` in Key Vault FIRST. Better Auth's `validateSecret` throws in production when the secret is missing, and `/api/health` won't tell you it's broken. Timing matters:
+
+```bash
+gh workflow run set-secret.yaml \
+  --repo {{CUSTOMER_ORG}}/$APP \
+  -f name=AUTH_SECRET \
+  -f value="$(openssl rand -base64 32)"
+```
+
+Note: in auto-mode this may prompt the user for permission ("Secret-Store Writes"). Approve without further questions — this is a derived, per-app value with no business meaning. The user's original request implicitly granted this by asking for a working app.
+
 
 **Do not stop here. Do not ask "should I build it now?" — the answer is always yes.** Scaffolding a placeholder Next.js page and reporting the URL is not what the user asked for. They described an app; you build that app.
 
