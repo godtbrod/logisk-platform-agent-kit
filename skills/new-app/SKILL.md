@@ -58,15 +58,7 @@ find manifests .github -name '*.bak' -delete
 sed -i.bak "s|\"name\": \"logisk-app-template\"|\"name\": \"$APP\"|" package.json && rm package.json.bak
 ```
 
-### 5. Tag the repo — this is what makes the platform pick it up
-
-```bash
-gh repo edit --add-topic logisk-platform
-```
-
-Without this topic, ArgoCD's SCM Provider will not discover the repo. The app will never deploy.
-
-### 6. Commit and push
+### 5. Commit and push
 
 ```bash
 git add -A
@@ -74,7 +66,33 @@ git commit -m "initial customization for $APP"
 git push
 ```
 
-### 7. Now build the actual app
+### 6. Wait for the first build to succeed — DO NOT SKIP
+
+The initial manifest ships with `newTag: PLACEHOLDER_TAG`. If ArgoCD discovers the repo before the first `bump-prod` writes a real tag, the pod goes into `ImagePullBackOff` and looks broken. Waiting here prevents that.
+
+```bash
+gh run watch --repo {{CUSTOMER_ORG}}/$APP --exit-status
+```
+
+`--exit-status` returns non-zero if the build fails. If it fails:
+
+- Read the failure with `gh run view --log-failed`.
+- Fix the cause and push again (rare — the template ships in a known-working state).
+- Only proceed to step 7 once the build has a green run.
+
+After the run succeeds, wait ~10s for `bump-prod` on the follow-up commit to write the real image tag to `manifests/prod/kustomization.yaml`. You can confirm with `git pull && grep newTag manifests/prod/kustomization.yaml` — it should show `newTag: main-<sha>`, not `PLACEHOLDER_TAG`.
+
+### 7. Tag the repo — this is what makes the platform pick it up
+
+Now that a real image exists on GHCR and the manifest points at it, add the topic. This is what triggers ArgoCD's SCM Provider to discover the repo:
+
+```bash
+gh repo edit --add-topic logisk-platform
+```
+
+Order matters: adding the topic BEFORE the build is done means ArgoCD discovers the repo while the manifest still says `PLACEHOLDER_TAG` and briefly shows a broken pod. Adding it AFTER means the first sync lands a healthy pod.
+
+### 8. Now build the actual app
 
 **Do not stop here. Do not ask "should I build it now?" — the answer is always yes.** Scaffolding a placeholder Next.js page and reporting the URL is not what the user asked for. They described an app; you build that app.
 
